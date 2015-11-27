@@ -1,21 +1,20 @@
 import tweepy
 import config
-import json
 import nltk
 import random
 import sqlite3
-from datetime import date
-import time
+import os
 
 auth = tweepy.OAuthHandler(config.CONSUMER_KEY, config.CONSUMER_SECRET)
 auth.set_access_token(config.ACCESS_TOKEN, config.ACCESS_TOKEN_SECRET)
 api = tweepy.API(auth)
+my_id = '2296882332'
 
 def save_original_user_tweets(usr_id):
 	"""
 	Given a user's id, get and save all their tweets to a .txt file
 	"""
-	with open('my_stuff.txt','w') as f:
+	with open(config.TWEET_PATH,'w') as f:
 		for status in tweepy.Cursor(api.user_timeline, id=usr_id).items():
 			if not status.retweeted and 'RT @' not in status.text:			
 				f.write(status.text+"\n")
@@ -47,7 +46,7 @@ def remove_random_crap(user_text):
 	new_text = []
 	remove = ['//', 'http', ':', '\'\'']
 	for word in user_text:
-		if '//'  not in word and 'http' not in word and ':' not in word:
+		if word not in remove:
 			new_text.append(word)
 
 	return new_text
@@ -139,35 +138,50 @@ def check_mentions():
 	"""
 	Grab all mentions found one the first page, from there we
 	check and see if the mention found was already used and if not,
-	we go ahead with posting a tweet.
-
-	*Note, actually grabbing the user's tweets does take a lot of time
-	and will reduce our overall available API calls.
+	we go ahead and append the user's id and screen name to a
+	mentions list which gets returned.
 	"""
 	print('Checking Mentions')
 	mentions = api.mentions_timeline(count=1)
-	tweet_date = str(date.today())
+	new_mentions = []
 	for mention in mentions:
-		if add_tweet_to_db(config.DB_PATH, mention.user.screen_name, mention.id, tweet_date):
-			print('{} mentioned us! Gonna send him some sentances now.'.format(mention.user.screen_name))
+		if add_tweet_to_db(config.DB_PATH, mention.user.screen_name, mention.id):
+			print('{} mentioned us! Gonna send him some sentences now.'.format(mention.user.screen_name))
 			_id = get_user_id(mention.user.screen_name)
-			#save_original_user_tweets(_id)
-			user_text = nltkify('my_stuff.txt')
-			clean_text = remove_random_crap(user_text)
-			pairs = create_word_pairs(clean_text)
+			new_mentions.append([mention.user.screen_name, _id])
 
-			sentence = format_sentence(make_sentence(clean_text, pairs, 10))
-			print(sentence)
-			#tweet_it(mention.user.screen_name, sentence)
+	return new_mentions
 
-		else:
-			print('Not going to do it because of some reason')
+def use_mentions(mention, get_user_tweet=False):
+	"""
+	Given a mention, send out a tweet using 'user_tweets'
+	to the person who mentioned.
+
+	If 'get_user_tweet' is True, we will create the tweet
+	using the mentions own tweets. Note however that doing
+	so is very API taxing and will ultimately result in a 
+	temporary API call lockout.
+
+	Also, if there does not exist a 'user_tweets' file, we
+	will automatically create on using the mentioned user. I
+	could create a slightly more complex and out of the way
+	of checking, but I feel as though this fits the scope and
+	size of this project.
+	"""
+	if get_user_tweet or not os.path.exists(config.TWEET_PATH):
+		save_original_user_tweets(mention[1])
+
+	user_text = nltkify(config.TWEET_PATH)
+	clean_text = remove_random_crap(user_text)
+	pairs = create_word_pairs(clean_text)
+	sentence = format_sentence(make_sentence(clean_text, pairs, 10))
+	tweet_it(mention[0], sentence)
 
 def tweet_it(username, sentence):
 	"""
 	Create our tweet with the username passed and the sentence we created.
 	"""
-	send = "Hey @{0}\n\n {1}".format(username, sentence)
+	send = "Hey {0}\n\n{1}".format(username, sentence)
 	api.update_status(status=send)
 
 def init_db(path):
@@ -177,31 +191,33 @@ def init_db(path):
 	sql = sqlite3.connect(path)
 	cur = sql.cursor()
 
-	cur.execute('CREATE TABLE IF NOT EXISTS old_tweets(screenname TEXT, tweetID TEXT, tweet_date TEXT)')
+	cur.execute('CREATE TABLE IF NOT EXISTS old_tweets(screenname TEXT, tweetID TEXT)')
 	print('Loaded database')
 
-def add_tweet_to_db(path, screenname, tweet_id, tweet_date):
+def add_tweet_to_db(path, screenname, tweet_id):
 	"""
-	Add the tweet into the db if we don't have it already, also we check
-	to see if the time the person requesting a sentence hasn't already made one
-	on the same day. Limit it to one per person per day.
+	Add the tweet into the db if we don't have it already, check
+	to ensure we only do this for NEW mentions via the tweet_id and
+	the tweet_date.
 	"""
 	sql = sqlite3.connect(path)
 	cur = sql.cursor()
-	date_now = date.today()
 
-	cur.execute('SELECT * FROM old_tweets WHERE screenname=? AND tweetID=? AND tweet_date=?', (screenname, tweet_id,tweet_date,))
+	cur.execute('SELECT * FROM old_tweets WHERE screenname=? AND tweetID=?', (screenname, tweet_id,))
 	
 	if not cur.fetchone():
-		if not date_now == tweet_date:
-			cur.execute('INSERT INTO old_tweets VALUES(?,?,?)', (screenname, tweet_id,tweet_date,))
+		cur.execute('INSERT INTO old_tweets VALUES(?,?)', (screenname, tweet_id,))
+		try:
+			sql.commit()
+			return True
+		except Exception:
+			return False
 	else:
 		return False
 
-	# Commit and return True to signify a succesful insert
-	sql.commit()
-	return True
-
 if __name__ == "__main__":
 	init_db(config.DB_PATH)
-	check_mentions()
+	mentions = check_mentions()
+
+	for mention in mentions:
+		use_mentions(mention)
