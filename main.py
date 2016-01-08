@@ -8,7 +8,6 @@ import os
 auth = tweepy.OAuthHandler(config.CONSUMER_KEY, config.CONSUMER_SECRET)
 auth.set_access_token(config.ACCESS_TOKEN, config.ACCESS_TOKEN_SECRET)
 api = tweepy.API(auth)
-my_id = '2296882332'
 
 def save_original_user_tweets(usr_id):
 	"""
